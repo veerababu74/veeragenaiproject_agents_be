@@ -1,0 +1,124 @@
+{
+ "examples": [
+  {
+   "id": "cat-mat",
+   "text": "The cat sat on the mat",
+   "title": "A plain sentence",
+   "teaches": "The whole pipeline end to end, with nothing unusual happening.",
+   "tokens": 6,
+   "top_prediction": {
+    "token": ",",
+    "id": 11,
+    "probability": 0.23701
+   }
+  },
+  {
+   "id": "counting",
+   "text": "1, 2, 3, 4,",
+   "title": "Continuing a pattern",
+   "teaches": "Induction: attention finding a repeating structure and extending it.",
+   "tokens": 8,
+   "top_prediction": {
+    "token": " 5",
+    "id": 642,
+    "probability": 0.87054
+   }
+  },
+  {
+   "id": "capital-france",
+   "text": "The capital of France is",
+   "title": "Recalling a fact",
+   "teaches": "Where factual knowledge lives \u2014 the feed-forward layers, not attention.",
+   "tokens": 5,
+   "top_prediction": {
+    "token": " the",
+    "id": 262,
+    "probability": 0.08459
+   }
+  },
+  {
+   "id": "subword",
+   "text": "unbelievable results",
+   "title": "One word, four tokens",
+   "teaches": "Byte-pair encoding: how a word the vocabulary lacks gets built from pieces.",
+   "tokens": 5,
+   "top_prediction": {
+    "token": ".",
+    "id": 13,
+    "probability": 0.1951
+   }
+  },
+  {
+   "id": "coreference",
+   "text": "The doctor told the nurse that she",
+   "title": "Working out who 'she' is",
+   "teaches": "Attention resolving a pronoun against candidate antecedents.",
+   "tokens": 7,
+   "top_prediction": {
+    "token": " had",
+    "id": 550,
+    "probability": 0.21806
+   }
+  },
+  {
+   "id": "agreement",
+   "text": "The keys to the cabinet are",
+   "title": "Agreement across a distance",
+   "teaches": "Long-range syntax: the verb agrees with 'keys', not the nearer 'cabinet'.",
+   "tokens": 6,
+   "top_prediction": {
+    "token": ":",
+    "id": 25,
+    "probability": 0.17113
+   }
+  },
+  {
+   "id": "code",
+   "text": "def add(a, b): return",
+   "title": "Code instead of prose",
+   "teaches": "That tokenization is tuned for text, and punctuation-heavy input fragments.",
+   "tokens": 8,
+   "top_prediction": {
+    "token": " a",
+    "id": 257,
+    "probability": 0.24272
+   }
+  },
+  {
+   "id": "repetition",
+   "text": "the cat the cat the cat the",
+   "title": "Deliberate repetition",
+   "teaches": "Induction heads: 'this happened before, so it happens again'.",
+   "tokens": 7,
+   "top_prediction": {
+    "token": " cat",
+    "id": 3797,
+    "probability": 0.90213
+   }
+  },
+  {
+   "id": "rare-word",
+   "text": "The antidisestablishmentarianism debate",
+   "title": "A very rare word",
+   "teaches": "How far subword splitting goes when a word is genuinely unusual.",
+   "tokens": 7,
+   "top_prediction": {
+    "token": " is",
+    "id": 318,
+    "probability": 0.20371
+   }
+  },
+  {
+   "id": "analogy",
+   "text": "Paris is to France as Rome is to",
+   "title": "An analogy",
+   "teaches": "Several mechanisms at once: pattern matching, factual recall, and copying.",
+   "tokens": 8,
+   "top_prediction": {
+    "token": " Rome",
+    "id": 10598,
+    "probability": 0.10649
+   }
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.env.local
+# The runtime SQLite directory at the repo root only. Anchored, because an
+# unanchored "data/" also matched projects/insidellm/data — which holds the
+# precomputed artifacts the service exists to serve.
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.pid
+.vercel
