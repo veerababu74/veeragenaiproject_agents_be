@@ -106,13 +106,22 @@ Per example, from one instrumented forward pass:
 |---|---|
 | Tokenization | Every pre-token, its bytes, its byte-encoded form, and **every merge** with the rank that selected it |
 | Token / position / summed embeddings | First 24 of 768 dimensions, plus true vector norms |
-| Nearest neighbours | Cosine similarity against all 50,257 embedding rows |
+| Nearest neighbours | Cosine similarity against all 50,257 embedding rows, **with the dot product and both norms it was divided by** |
+| Layer normalisation | μ, σ², σ, γ, β and the vector at each of the four stages, plus **σ and ‖residual‖ at every layer** |
 | Attention | **All 144 matrices** (12 layers × 12 heads), rounded to 4 dp |
 | Head patterns | Auto-classified: previous token, current token, attention sink, broad, mixed |
-| Worked example | One head's complete arithmetic — q·k, scaling, mask, exponentials, softmax, weighted sum |
-| MLP | Top activated neurons of 3072, and what fraction are active |
+| Worked example | One head's complete arithmetic — q·k **term by term**, scaling, mask, exponentials, softmax, weighted sum |
+| MLP | Top activated neurons of 3072, **both sides of GELU**, and what fraction are active |
+| Residual stream | Per layer: ‖x‖ in and out, ‖Attn‖, ‖FFN‖, and the cosine between the stream entering and leaving |
 | Logit lens | The decoded prediction after **every** layer |
-| Output | Top-8 tokens with probabilities, and the distribution's entropy |
+| Output | Top-8 tokens with probabilities **and logits**, the partition function Z, the ‖z‖‖e‖cos θ decomposition of the winning logit, and the distribution's entropy |
+
+Several of those exist only so the page can **show its working**. A probability on
+its own asks to be believed; a probability next to `exp(ℓ − max) / Z` with all
+three numbers present can be checked with a calculator. The rule the payload
+follows is that every quantity an equation on the page divides by, or sums over,
+is shipped alongside the result — the cosine's two norms, the softmax's Z, the
+GELU's input, the LayerNorm's μ and σ.
 
 Payloads are 42–78 KB per example. Attention dominates: 12 × 12 × T² floats, which is why the
 examples are kept to 5–8 tokens.
@@ -125,9 +134,22 @@ Ordered as the data flows: **tokenization → token embeddings → positional en
 normalisation → self-attention → multi-head attention → feed-forward → residual stream →
 unembedding**.
 
-Each carries a summary, a step-by-step account, the formula, *why it exists*, a commonly-held
-misconception, and a pointer to what to look at in the data — that last field matters most, because a
-heatmap nobody knows how to read teaches nothing.
+Each carries a summary, a step-by-step account, *why it exists*, a commonly-held misconception, and a
+pointer to what to look at in the data — that last field matters most, because a heatmap nobody knows
+how to read teaches nothing.
+
+The mathematics is given in three registers, because they are three separate claims:
+
+| Field | What it is |
+|---|---|
+| `formula` | The equation, stated once |
+| `symbols` | Every symbol in it defined, **with its shape** — most confusion about a transformer is confusion about which axis something is summed over |
+| `derivation` | The equation decomposed into the operations actually performed, in order, each with the reason it is there |
+
+The fourth register is not static text at all: every panel ends with the same
+equation evaluated on the sentence currently loaded, with that example's numbers
+substituted in and the result of each step shown. A formula printed on its own
+asks the reader to take it on trust, and the numbers were already in the payload.
 
 ---
 
@@ -159,6 +181,30 @@ The numpy implementation is checked against behaviour GPT-2 is known to have:
 - Softmax probabilities sum to 1.0, asserted at build time and shown in the UI
 
 If the forward pass were wrong, none of these would hold.
+
+### The arithmetic shown on the page is checked too
+
+Since the walkthrough now prints its working, a substitution that does not come
+out is worse than no substitution at all — a reader who checks it by hand and
+finds it wrong has been taught something false. So `verify()` in `build.py`
+**re-derives every identity the page displays** from the payload about to be
+written, and a mismatch fails the build rather than shipping:
+
+| Shown on the page | Re-derived from the payload |
+|---|---|
+| `x̂ = (x − μ) / √(σ² + ε)` | against the shipped `input`, `mean` and `std` |
+| `LN(x) = γx̂ + β` | against the shipped `gamma`, `beta` and `normalised` |
+| `x + Attn(LN(x))` | the addition, dimension by dimension |
+| `GELU(h)` | recomputed from the shipped pre-activation, every neuron of every layer |
+| `cos = dot / (‖a‖‖b‖)` | every nearest neighbour of every token |
+| `s / √d_k`, `exp / Σexp` | the attention chain, at the winning position |
+| `exp(ℓ − max) / Z` | against the shipped probability |
+| `ℓ = ‖z‖‖e‖cos θ` | against the shipped logit |
+
+The residual check is the one with teeth: it asserts the stream actually **grows**
+across the twelve layers, because that growth is the entire argument for why
+normalisation has to run before every block. If it ever stopped being true, the
+explanation would be wrong and the build would say so.
 
 ---
 
@@ -193,11 +239,20 @@ done
 
 # 2. From the repository root
 pip install numpy regex
-python -m projects.insidellm.precompute.build --weights /tmp/gpt2 --out projects/insidellm/data
+python projects/insidellm/precompute/build.py --weights /tmp/gpt2 --out projects/insidellm/data
 ```
 
-Takes about half a minute. The output in `data/` **is committed** — it is what the service serves,
-and rebuilding it must never be a deploy-time step.
+Run it as a **script**, not with `python -m`. Both would reach the same module, but
+`-m projects.insidellm.…` imports `projects/__init__.py` on the way, and that file
+registers every project in the repository — so the build would need fastapi, jwt
+and langchain installed to compute a matrix multiplication. Run directly, the
+script registers `projects` and `projects.insidellm` as bare namespace packages
+first, skipping those `__init__` files, and numpy plus regex really are enough.
+
+Takes a couple of minutes. The output in `data/` **is committed** — it is what the service serves,
+and rebuilding it must never be a deploy-time step. The build refuses to write a
+payload whose numbers contradict the arithmetic the page displays; see
+[Correctness](#correctness).
 
 ---
 

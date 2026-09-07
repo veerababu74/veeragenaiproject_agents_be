@@ -27,6 +27,27 @@ COMPONENTS = [
                "unfamiliar name. Working from bytes upward means any input can be represented — a "
                "rare word simply costs more tokens.",
         "formula": "text → pre-tokens → bytes → merge by rank → token IDs",
+        "symbols": [
+            {"symbol": "V", "means": "the vocabulary — every token the model can read or write",
+             "shape": "50,257 entries"},
+            {"symbol": "rank(a, b)", "means": "position of the pair (a, b) in the learned merge list; "
+                                              "lower means it was more frequent in training",
+             "shape": "0 … 50,000"},
+            {"symbol": "t", "means": "one token ID — a row number into V", "shape": "integer"},
+        ],
+        "derivation": [
+            {"label": "Split", "expression": "pieces = regex(text)",
+             "note": "A fixed pattern cuts the text, keeping a leading space attached to the word "
+                     "that follows. This is why ' cat' and 'cat' are different tokens."},
+            {"label": "Encode", "expression": "b = utf8(piece)  →  symbols = [byte_map[bᵢ]]",
+             "note": "Each byte becomes one printable symbol, so any input at all is representable."},
+            {"label": "Merge",
+             "expression": "while pairs ≠ ∅:  (a, b) = argmin rank(a, b);  a·b → ab",
+             "note": "The lowest-ranked adjacent pair merges first, and the scan repeats until no "
+                     "pair appears in the merge list. Order is by rank, never by position."},
+            {"label": "Look up", "expression": "t = V[symbol]",
+             "note": "Each surviving symbol becomes its row number."},
+        ],
         "misconception": "Tokens are not words and not syllables. They are whatever the merge "
                          "statistics produced, which is why 'unbelievable' splits into un + bel + "
                          "iev + able rather than un + believe + able.",
@@ -50,6 +71,21 @@ COMPONENTS = [
                "meaning, so they are replaced by vectors positioned in a space where distance "
                "corresponds to similarity of use.",
         "formula": "embedding = W_e[token_id]     W_e ∈ ℝ^(50257 × 768)",
+        "symbols": [
+            {"symbol": "W_E", "means": "the embedding table, one learned row per vocabulary entry",
+             "shape": "50257 × 768"},
+            {"symbol": "t", "means": "the token ID being looked up", "shape": "integer"},
+            {"symbol": "e", "means": "the resulting vector for that token", "shape": "768"},
+        ],
+        "derivation": [
+            {"label": "Look up", "expression": "e = W_E[t]",
+             "note": "Row t of the table, copied out. No arithmetic happens here — this is indexing."},
+            {"label": "Compare",
+             "expression": "cos(e₁, e₂) = (e₁ · e₂) / (‖e₁‖ ‖e₂‖)",
+             "note": "Similarity between two tokens is the cosine of the angle between their rows. "
+                     "Dividing by both lengths is what makes it a measure of direction rather than "
+                     "of magnitude."},
+        ],
         "misconception": "This vector is not the token's meaning in context. It is the same every "
                          "time that token appears, whatever the sentence. Context arrives later, "
                          "in the attention layers.",
@@ -75,6 +111,31 @@ COMPONENTS = [
                "'the cat sat' and 'sat the cat' would produce identical results — the mechanism is "
                "order-blind by construction.",
         "formula": "x = W_e[token] + W_p[position]        (GPT-2, learned and added)",
+        "symbols": [
+            {"symbol": "W_P", "means": "GPT-2's learned position table, one row per position",
+             "shape": "1024 × 768"},
+            {"symbol": "pos", "means": "the token's index in the sequence, counting from 0",
+             "shape": "integer"},
+            {"symbol": "i", "means": "which dimension pair is being written", "shape": "0 … 383"},
+            {"symbol": "d", "means": "the model width", "shape": "768"},
+        ],
+        "derivation": [
+            {"label": "Learned (GPT-2)", "expression": "x = W_E[t] + W_P[pos]",
+             "note": "One addition. The position vector is much shorter than the token vector, so it "
+                     "nudges the meaning rather than overwriting it."},
+            {"label": "Sinusoidal (original Transformer)",
+             "expression": "PE(pos, 2i)   = sin(pos / 10000^(2i/d))\n"
+                           "PE(pos, 2i+1) = cos(pos / 10000^(2i/d))",
+             "note": "Each dimension pair is a wave of a different wavelength, from 2π up to "
+                     "10000·2π. No parameters, and defined for any position however large."},
+            {"label": "Rotary (LLaMA and after)",
+             "expression": "θᵢ = pos / 10000^(2i/d)\n"
+                           "(qₐ, q_b) ← (qₐ cos θᵢ − q_b sin θᵢ,  "
+                           "qₐ sin θᵢ + q_b cos θᵢ)",
+             "note": "Dimension pairs are rotated inside attention. A dot product between two rotated "
+                     "vectors depends only on the difference of their angles, so what survives is the "
+                     "relative distance between the two tokens."},
+        ],
         "misconception": "Adding position to meaning sounds like it should corrupt the meaning. In "
                          "768 dimensions there is room for both, and the following layers are "
                          "trained to read them apart.",
@@ -98,6 +159,27 @@ COMPONENTS = [
                "would grow without bound. Normalising first keeps every block receiving inputs on a "
                "predictable scale, which is what makes deep stacks trainable.",
         "formula": "LN(x) = γ · (x − μ) / √(σ² + ε) + β",
+        "symbols": [
+            {"symbol": "x", "means": "one token's vector, on its own", "shape": "768"},
+            {"symbol": "μ", "means": "the mean of those 768 numbers", "shape": "scalar"},
+            {"symbol": "σ²", "means": "their variance", "shape": "scalar"},
+            {"symbol": "ε", "means": "a small constant so the divisor is never zero", "shape": "1e-5"},
+            {"symbol": "γ, β", "means": "learned gain and bias, one of each per dimension",
+             "shape": "768 each"},
+        ],
+        "derivation": [
+            {"label": "Mean", "expression": "μ = (1/d) Σᵢ xᵢ",
+             "note": "Summed across the 768 features of this one token — not across tokens, and "
+                     "not across the batch."},
+            {"label": "Variance", "expression": "σ² = (1/d) Σᵢ (xᵢ − μ)²",
+             "note": "How far the features spread around that mean."},
+            {"label": "Normalise",
+             "expression": "x̂ = (x − μ) / √(σ² + ε)",
+             "note": "Subtract, then divide. Whatever came in, x̂ now has mean 0 and variance 1."},
+            {"label": "Rescale", "expression": "LN(x) = γ ⊙ x̂ + β",
+             "note": "Element-wise, with learned parameters — so the block can undo the "
+                     "normalisation on any dimension where that turns out to be useful."},
+        ],
         "misconception": "It normalises across the features of one token, not across the tokens in "
                          "the batch. Each token is normalised entirely on its own.",
         "look_at": "The mean and standard deviation recorded per token per layer — how far the "
@@ -123,6 +205,40 @@ COMPONENTS = [
                "mechanism that lets a token pull in exactly the other tokens it needs, with the "
                "choice of which ones learned rather than fixed.",
         "formula": "Attention(Q, K, V) = softmax( QKᵀ / √d_k + mask ) V",
+        "symbols": [
+            {"symbol": "qᵢ, kⱼ, vⱼ",
+             "means": "query, key and value vectors for positions i and j", "shape": "64 each"},
+            {"symbol": "d_k", "means": "the width of one head, which sets the scaling", "shape": "64"},
+            {"symbol": "sᵢⱼ", "means": "how well position i's query matches position j's key",
+             "shape": "scalar"},
+            {"symbol": "aᵢⱼ", "means": "attention weight — the share of position i's output "
+                                                 "taken from position j", "shape": "sums to 1 over j"},
+        ],
+        "derivation": [
+            {"label": "Project",
+             "expression": "qᵢ = xᵢ W_Q,   kⱼ = xⱼ W_K,   vⱼ = xⱼ W_V",
+             "note": "Three learned views of the same vector: what this token is looking for, what it "
+                     "offers as a label, and what it would hand over if it were selected."},
+            {"label": "Score",
+             "expression": "sᵢⱼ = qᵢ · kⱼ = Σₙ qᵢ[n] kⱼ[n]",
+             "note": "One dot product per pair, summed over all 64 dimensions. Large and positive "
+                     "where the two vectors point the same way."},
+            {"label": "Scale",
+             "expression": "s′ᵢⱼ = sᵢⱼ / √d_k = sᵢⱼ / 8",
+             "note": "A dot product of 64 roughly independent terms grows like √64. Without "
+                     "dividing that back out, softmax receives huge values and collapses onto a "
+                     "single position."},
+            {"label": "Mask", "expression": "s′ᵢⱼ = −∞   for every j > i",
+             "note": "Positions after i are erased before softmax, so exp(−∞) = 0 and a token "
+                     "predicting the next word cannot read it."},
+            {"label": "Softmax",
+             "expression": "aᵢⱼ = exp(s′ᵢⱼ − max) / Σₖ exp(s′ᵢₖ − max)",
+             "note": "Turns scores into weights that sum to 1. Subtracting the row maximum first "
+                     "prevents overflow and cancels in the division, so the result is unchanged."},
+            {"label": "Mix", "expression": "oᵢ = Σⱼ aᵢⱼ vⱼ",
+             "note": "The output is a weighted average of value vectors. This is the only step in the "
+                     "whole model where information crosses between positions."},
+        ],
         "misconception": "Attention weights are not an explanation of the model's reasoning. They "
                          "show where information was read from, which is a genuine constraint but "
                          "not the same as why the answer came out as it did.",
@@ -145,6 +261,26 @@ COMPONENTS = [
                "same weights. Separate heads can specialise — and they demonstrably do, with some "
                "tracking the previous token and others matching repeated structure.",
         "formula": "MultiHead(x) = Concat(head₁ … head₁₂) W_O",
+        "symbols": [
+            {"symbol": "H", "means": "how many heads run in parallel", "shape": "12"},
+            {"symbol": "d_model", "means": "the model width the heads divide up", "shape": "768"},
+            {"symbol": "d_k", "means": "width of one head, d_model / H", "shape": "64"},
+            {"symbol": "W_O", "means": "the projection that mixes the heads back together",
+             "shape": "768 × 768"},
+        ],
+        "derivation": [
+            {"label": "Split", "expression": "d_k = d_model / H = 768 / 12 = 64",
+             "note": "The dimensions are partitioned, not duplicated. Twelve heads of 64 cost the "
+                     "same arithmetic as one head of 768."},
+            {"label": "Run",
+             "expression": "headₕ = softmax(Qₕ Kₕᵀ / √d_k + mask) Vₕ",
+             "note": "The identical computation, twelve times over, on twelve disjoint slices with "
+                     "twelve separate sets of projection weights."},
+            {"label": "Recombine",
+             "expression": "MultiHead(x) = Concat(head₁ … head₁₂) W_O",
+             "note": "Concatenation restores 768 dimensions; W_O lets the heads' outputs interact "
+                     "before the result is added to the residual stream."},
+        ],
         "misconception": "Heads are not assigned roles. Nobody told head 11 of layer 4 to become an "
                          "induction head; the labels here were inferred from its behaviour after "
                          "the fact.",
@@ -167,6 +303,27 @@ COMPONENTS = [
                "to it. The feed-forward block supplies the non-linear capacity, and it holds about "
                "two thirds of the model's parameters.",
         "formula": "FFN(x) = GELU(x W₁ + b₁) W₂ + b₂        768 → 3072 → 768",
+        "symbols": [
+            {"symbol": "W₁, b₁", "means": "the up-projection, widening each token's vector",
+             "shape": "768 × 3072"},
+            {"symbol": "W₂, b₂", "means": "the down-projection, back to model width",
+             "shape": "3072 × 768"},
+            {"symbol": "h", "means": "pre-activation — the 3072 numbers before GELU", "shape": "3072"},
+            {"symbol": "a", "means": "the same numbers after GELU", "shape": "3072"},
+        ],
+        "derivation": [
+            {"label": "Expand", "expression": "h = x W₁ + b₁        768 → 3072",
+             "note": "Four times as wide. Each of the 3072 columns of W₁ is a direction this layer "
+                     "can detect in the incoming vector."},
+            {"label": "Activate",
+             "expression": "a = GELU(h) = 0.5 h (1 + tanh(√(2/π) (h + 0.044715 h³)))",
+             "note": "The only non-linearity in the block. Large positive values pass through almost "
+                     "unchanged; negatives are squashed towards zero but not exactly to it, which is "
+                     "what distinguishes GELU from ReLU."},
+            {"label": "Contract", "expression": "FFN(x) = a W₂ + b₂        3072 → 768",
+             "note": "Each active neuron writes its own row of W₂ into the output, scaled by how "
+                     "hard it fired. Two thirds of GPT-2's parameters live in these two matrices."},
+        ],
         "misconception": "It looks like the boring part next to attention, but it is where most of "
                          "the parameters are, and interpretability work keeps locating specific "
                          "factual associations inside it.",
@@ -189,6 +346,27 @@ COMPONENTS = [
                "networks trainable at all. It also means each block can make a small correction "
                "instead of having to reconstruct everything it received.",
         "formula": "xₙ₊₁ = xₙ + Block(LayerNorm(xₙ))",
+        "symbols": [
+            {"symbol": "xₙ", "means": "the residual stream arriving at block n",
+             "shape": "768 per token"},
+            {"symbol": "Attn, FFN", "means": "the two sub-blocks, each writing a correction",
+             "shape": "768 → 768"},
+            {"symbol": "LN₁, LN₂", "means": "the normalisation applied before each sub-block",
+             "shape": "768 → 768"},
+        ],
+        "derivation": [
+            {"label": "Attention half", "expression": "x′ = xₙ + Attn(LN₁(xₙ))",
+             "note": "Note what is normalised and what is added: the block reads a normalised copy "
+                     "and adds its result back to the unnormalised original."},
+            {"label": "Feed-forward half",
+             "expression": "xₙ₊₁ = x′ + FFN(LN₂(x′))",
+             "note": "The same shape again. Twelve blocks means twenty-four of these additions."},
+            {"label": "Unrolled",
+             "expression": "x₁₂ = x₀ + Σₙ Attnₙ + Σₙ FFNₙ",
+             "note": "Because every term is added, the final vector is a running sum of everything "
+                     "every block wrote. Nothing is ever overwritten, and the derivative of the "
+                     "output with respect to the input keeps a direct path back through that sum."},
+        ],
         "misconception": "The layers are not a pipeline that transforms and hands on. They all read "
                          "from and write to the same shared vector — which is precisely why the "
                          "logit lens works.",
@@ -212,6 +390,32 @@ COMPONENTS = [
                "saves 38 million parameters. A token's output score is literally the dot product of "
                "the final vector with that token's input embedding.",
         "formula": "logits = LayerNorm(x) · W_eᵀ        P = softmax(logits)",
+        "symbols": [
+            {"symbol": "z", "means": "the final vector, after the last normalisation", "shape": "768"},
+            {"symbol": "W_E[v]", "means": "row v of the same embedding table used at the input",
+             "shape": "768"},
+            {"symbol": "ℓᵥ", "means": "the logit — an unnormalised score for token v",
+             "shape": "scalar"},
+            {"symbol": "Z", "means": "the partition function, the sum softmax divides by",
+             "shape": "scalar"},
+        ],
+        "derivation": [
+            {"label": "Normalise", "expression": "z = LN_f(x₁₂)",
+             "note": "One last LayerNorm before the vocabulary projection."},
+            {"label": "Score",
+             "expression": "ℓᵥ = z · W_E[v] = ‖z‖ ‖W_E[v]‖ cos θ",
+             "note": "One dot product per vocabulary entry, all 50,257 of them. Because the weights "
+                     "are tied, a token scores highly exactly when the final vector points the way "
+                     "that token's input embedding points."},
+            {"label": "Softmax",
+             "expression": "P(v) = exp(ℓᵥ − max ℓ) / Z,   "
+                           "Z = Σᵤ exp(ℓᵤ − max ℓ)",
+             "note": "Exponentiate, then divide by the total. Z is a sum over the whole vocabulary, "
+                     "which is why a probability here depends on every other token's score."},
+            {"label": "Measure", "expression": "H = − Σᵥ P(v) log P(v)",
+             "note": "Entropy in nats: 0 would mean one token is certain, and log(50257) ≈ 10.8 "
+                     "would mean every token is equally likely."},
+        ],
         "misconception": "The model does not choose a word. It produces a distribution over all "
                          "50,257 tokens; picking one is a separate sampling decision made outside "
                          "the model.",

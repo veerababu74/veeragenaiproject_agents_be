@@ -2,7 +2,7 @@
 
 Run once, by hand, whenever the examples change:
 
-    python -m projects.insidellm.precompute.build --weights <dir> --out <dir>
+    python projects/insidellm/precompute/build.py --weights <dir> --out <dir>
 
 Everything expensive happens here: loading 548 MB of weights, twelve forward
 passes, nearest-neighbour searches over the full 50,257-token embedding table.
@@ -12,9 +12,26 @@ service ever touches.
 
 import argparse
 import json
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
+
+# Run as a script, `projects.insidellm` would be imported through
+# `projects/__init__.py`, which registers every project in the repository and so
+# pulls in fastapi, jwt and langchain — none of which this build needs and all of
+# which would make the documented "pip install numpy regex" a lie. Registering
+# the two packages as bare namespaces first skips those __init__ files and
+# imports only the four modules below.
+if __name__ == "__main__" and "projects" not in sys.modules:
+    ROOT = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(ROOT))
+    for _name, _path in (("projects", ROOT / "projects"),
+                         ("projects.insidellm", ROOT / "projects" / "insidellm")):
+        _module = types.ModuleType(_name)
+        _module.__path__ = [str(_path)]
+        sys.modules[_name] = _module
 
 from projects.insidellm.examples import EXAMPLES
 from projects.insidellm.precompute.gpt2_numpy import GPT2, softmax
@@ -80,7 +97,13 @@ def nearest_tokens(model: GPT2, tokenizer: GPT2Tokenizer, token_id: int, k: int 
     similarity = (table @ vector) / (norms * np.linalg.norm(vector) + 1e-8)
     similarity[token_id] = -np.inf
     top = np.argsort(-similarity)[:k]
-    return [{"token": tokenizer.token_text(int(i)), "id": int(i), "similarity": r(similarity[i], 3)}
+    # The dot product and both norms travel with the similarity so the page can
+    # show the division that produced it rather than asserting the quotient.
+    return [{"token": tokenizer.token_text(int(i)), "id": int(i),
+             "similarity": r(similarity[i], 3),
+             "dot": r(float(table[i] @ vector), 2),
+             "norm": r(float(norms[i]), 2),
+             "query_norm": r(float(np.linalg.norm(vector)), 2)}
             for i in top]
 
 
@@ -97,7 +120,11 @@ def project_2d(vectors: np.ndarray):
 def top_predictions(logits: np.ndarray, tokenizer: GPT2Tokenizer, k: int = 8):
     probs = softmax(logits)
     top = np.argsort(-probs)[:k]
-    return [{"token": tokenizer.token_text(int(i)), "id": int(i), "probability": r(probs[i], 5)}
+    # exp(logit - max) is the numerator the softmax actually divides; shipping it
+    # alongside the logit lets the page show the arithmetic instead of the result.
+    shifted = np.exp(logits - logits.max())
+    return [{"token": tokenizer.token_text(int(i)), "id": int(i), "probability": r(probs[i], 5),
+             "logit": r(logits[i], 3), "exp_shifted": r(shifted[i], 6)}
             for i in top]
 
 
@@ -153,6 +180,11 @@ def build_worked_example(trace, tokenizer, tokens, model):
                 "position": position,
                 "token": tokens[position],
                 "vector": r(k_all[position][:WORKED_DIMS], 3),
+                # A 64-term dot product cannot be printed, but its first terms
+                # can: these are q_i x k_i for the dimensions shown above, so a
+                # reader can add them up and see the total is of that kind.
+                "products": r(q[:WORKED_DIMS] * k_all[position][:WORKED_DIMS], 3),
+                "partial_sum": r(float(q[:WORKED_DIMS] @ k_all[position][:WORKED_DIMS]), 3),
                 "dot_product": r(raw[position], 3),
                 "scaled": r(scaled[position], 3),
                 "masked": position > query_position,
@@ -171,6 +203,158 @@ def build_worked_example(trace, tokenizer, tokens, model):
         "checks": {
             "probabilities_sum": r(probs.sum(), 6),
             "masked_positions_are_zero": bool(np.all(probs[query_position + 1:] == 0)) if query_position + 1 < len(tokens) else True,
+        },
+    }
+
+
+def build_layernorm(model: GPT2, trace, tokens) -> dict:
+    """The normalisation arithmetic, at one token, with every term of the formula.
+
+    LN(x) = gamma . (x - mu) / sqrt(sigma^2 + eps) + beta is four operations, and a
+    reader can follow all four if the intermediates are present. The worked case
+    is the first LayerNorm of layer 0 at the final token; the drift table is the
+    same statistics at every layer, which is the evidence that the residual
+    stream really does grow the way the explanation claims.
+    """
+    position = len(tokens) - 1
+    x = trace["embedding_sum"][position]
+    mean = float(x.mean())
+    variance = float(x.var())
+    eps = 1e-5
+    std = float(np.sqrt(variance + eps))
+    centred = x - mean
+    normalised = centred / std
+    weights = model.block_weights(0)
+    gamma = np.asarray(weights["ln_1.weight"], dtype=np.float32)
+    beta = np.asarray(weights["ln_1.bias"], dtype=np.float32)
+    output = normalised * gamma + beta
+
+    drift = []
+    for entry in trace["layers"]:
+        residual = trace["residual_stream"][entry["index"]][position]
+        drift.append({
+            "layer": entry["index"],
+            "ln1_mean": r(float(entry["ln_1"]["mean"][position]), 3),
+            "ln1_std": r(float(entry["ln_1"]["std"][position]), 3),
+            "ln2_mean": r(float(entry["ln_2"]["mean"][position]), 3),
+            "ln2_std": r(float(entry["ln_2"]["std"][position]), 3),
+            "residual_norm": r(float(np.linalg.norm(residual)), 2),
+        })
+
+    return {
+        "eps": eps,
+        "dims_shown": WORKED_DIMS,
+        "d_model": int(x.shape[0]),
+        "position": position,
+        "token": tokens[position],
+        "site": "layer 0, before attention",
+        "input": r(x[:WORKED_DIMS], 3),
+        "mean": r(mean, 4),
+        "variance": r(variance, 4),
+        "std": r(std, 4),
+        "centred": r(centred[:WORKED_DIMS], 3),
+        "normalised": r(normalised[:WORKED_DIMS], 3),
+        "gamma": r(gamma[:WORKED_DIMS], 3),
+        "beta": r(beta[:WORKED_DIMS], 3),
+        "output": r(output[:WORKED_DIMS], 3),
+        "input_norm": r(float(np.linalg.norm(x)), 2),
+        "output_norm": r(float(np.linalg.norm(output)), 2),
+        # Proof the formula was applied and not merely quoted.
+        "checks": {
+            "normalised_mean": r(float(normalised.mean()), 6),
+            "normalised_std": r(float(normalised.std()), 4),
+        },
+        "drift": drift,
+    }
+
+
+def build_residual(trace, tokens) -> dict:
+    """What each block actually added to the running vector.
+
+    The residual claim - every block adds a correction rather than replacing the
+    stream - is checkable arithmetic: compare the norm of what a block wrote
+    against the norm of the stream it wrote into. Doing that per layer is the
+    difference between being told addition matters and seeing that attention
+    contributes a few percent while the stream itself grows steadily.
+    """
+    position = len(tokens) - 1
+    layers = []
+    for entry in trace["layers"]:
+        index = entry["index"]
+        before = trace["residual_stream"][index][position]
+        attention_out = entry["attention"]["output"][position]
+        after_attention = entry["after_attention_residual"][position]
+        mlp_out = entry["mlp"]["output"][position]
+        after_mlp = entry["after_mlp_residual"][position]
+        before_norm = float(np.linalg.norm(before))
+        after_norm = float(np.linalg.norm(after_mlp))
+        cosine = float(before @ after_mlp / (before_norm * after_norm + 1e-8))
+        layers.append({
+            "layer": index,
+            "in_norm": r(before_norm, 2),
+            "attention_norm": r(float(np.linalg.norm(attention_out)), 2),
+            "after_attention_norm": r(float(np.linalg.norm(after_attention)), 2),
+            "mlp_norm": r(float(np.linalg.norm(mlp_out)), 2),
+            "out_norm": r(after_norm, 2),
+            # What share of the outgoing stream each sub-block wrote.
+            "attention_share": r(float(np.linalg.norm(attention_out)) / (after_norm + 1e-8), 3),
+            "mlp_share": r(float(np.linalg.norm(mlp_out)) / (after_norm + 1e-8), 3),
+            "direction_cosine": r(cosine, 3),
+        })
+
+    first = trace["layers"][0]
+    return {
+        "dims_shown": WORKED_DIMS,
+        "position": position,
+        "token": tokens[position],
+        "layers": layers,
+        "worked": {
+            "layer": 0,
+            "x": r(trace["residual_stream"][0][position][:WORKED_DIMS], 3),
+            "attention_out": r(first["attention"]["output"][position][:WORKED_DIMS], 3),
+            "sum": r(first["after_attention_residual"][position][:WORKED_DIMS], 3),
+        },
+    }
+
+
+def build_prediction(model: GPT2, tokenizer: GPT2Tokenizer, trace) -> dict:
+    """The last two operations, with the quantities they are computed from.
+
+    A logit is a dot product between the final vector and one row of the
+    embedding table, and softmax divides by a sum over all 50,257 of them.
+    Neither is visible from a probability alone, so both the logits and the
+    partition function they were divided by are shipped.
+    """
+    logits = trace["logits"][-1]
+    final = trace["final_norm"][-1]
+    table = np.asarray(model.w["wte.weight"], dtype=np.float32)
+    probabilities = softmax(logits)
+    maximum = float(logits.max())
+    partition = float(np.exp(logits - maximum).sum())
+
+    top = top_predictions(logits, tokenizer, 8)
+    winner = int(top[0]["id"])
+    embedding = table[winner]
+    final_norm = float(np.linalg.norm(final))
+    embedding_norm = float(np.linalg.norm(embedding))
+
+    return {
+        "top": top,
+        "entropy": r(float(-(probabilities * np.log(probabilities + 1e-10)).sum()), 3),
+        "vocab": int(logits.shape[0]),
+        "max_logit": r(maximum, 3),
+        # Every exponential in the payload was shifted by max_logit, so this is
+        # the denominator that turns them into the probabilities shown.
+        "partition": r(partition, 4),
+        # A logit is |x| |e| cos(theta): the same dot product as everywhere else,
+        # against the very embedding row the input lookup used.
+        "unembedding": {
+            "token": top[0]["token"],
+            "id": winner,
+            "final_norm": r(final_norm, 2),
+            "embedding_norm": r(embedding_norm, 2),
+            "cosine": r(float(final @ embedding / (final_norm * embedding_norm + 1e-8)), 4),
+            "logit": r(float(final @ embedding), 3),
         },
     }
 
@@ -207,14 +391,20 @@ def build_example(model: GPT2, tokenizer: GPT2Tokenizer, example: dict) -> dict:
     mlp_layers = []
     for layer in trace["layers"]:
         activated = layer["mlp"]["activated"][-1]
+        pre_activation = layer["mlp"]["pre_activation"][-1]
         top = np.argsort(-np.abs(activated))[:8]
         mlp_layers.append({
             "layer": layer["index"],
             "expanded_dim": int(layer["mlp"]["expanded_dim"]),
-            "top_neurons": [{"neuron": int(i), "activation": r(activated[i], 3)} for i in top],
+            # Both sides of GELU. With only the output there is no way to show
+            # what the activation did; with both, the curve becomes checkable.
+            "top_neurons": [{"neuron": int(i), "activation": r(activated[i], 3),
+                             "pre_activation": r(pre_activation[i], 3)} for i in top],
             "fraction_active": r(float((activated > 0).mean()), 3),
             "mean_absolute": r(float(np.abs(activated).mean()), 3),
         })
+
+    prediction = build_prediction(model, tokenizer, trace)
 
     return {
         "id": example["id"],
@@ -256,15 +446,13 @@ def build_example(model: GPT2, tokenizer: GPT2Tokenizer, example: dict) -> dict:
             "neighbors": [nearest_tokens(model, tokenizer, int(token_id)) for token_id in ids],
             "projection": project_2d(token_embeddings),
         },
+        "layernorm": build_layernorm(model, trace, tokens),
         "attention": {"layers": attention_layers, "patterns": patterns, "entropy": entropies},
         "worked_example": build_worked_example(trace, tokenizer, tokens, model),
+        "residual": build_residual(trace, tokens),
         "mlp": {"layers": mlp_layers},
         "logit_lens": lens,
-        "prediction": {
-            "top": top_predictions(trace["logits"][-1], tokenizer, 8),
-            "entropy": r(float(-(softmax(trace["logits"][-1]) *
-                                 np.log(softmax(trace["logits"][-1]) + 1e-10)).sum()), 3),
-        },
+        "prediction": prediction,
     }
 
 
@@ -308,6 +496,77 @@ def build_position_study(model: GPT2) -> dict:
     }
 
 
+def verify(built: dict) -> list[str]:
+    """Re-derive every piece of arithmetic the walkthrough prints.
+
+    The page now shows its working — (x - mu) / sigma with the actual numbers,
+    exp(l - max) / Z with the actual logits — and a substitution that does not
+    come out is worse than no substitution at all, because a reader who checks it
+    by hand and finds it wrong has been taught something false.
+
+    So every identity displayed on the page is recomputed here from the payload
+    that will ship, and a mismatch fails the build. Tolerances are loose enough
+    for four-decimal rounding and no looser.
+    """
+    problems = []
+
+    def close(left, right, tolerance, message):
+        if abs(left - right) > tolerance:
+            problems.append(f"{message}: {left} vs {right}")
+
+    normalisation = built["layernorm"]
+    close(normalisation["normalised"][0],
+          (normalisation["input"][0] - normalisation["mean"]) / normalisation["std"],
+          0.01, "layer norm: x-hat does not follow from x, mu and sigma")
+    close(normalisation["output"][0],
+          normalisation["gamma"][0] * normalisation["normalised"][0] + normalisation["beta"][0],
+          0.01, "layer norm: gamma x-hat + beta does not give the output")
+    close(normalisation["checks"]["normalised_std"], 1.0, 0.01,
+          "layer norm: normalised vector is not unit variance")
+
+    residual = built["residual"]
+    for index, (left, right, total) in enumerate(zip(
+            residual["worked"]["x"], residual["worked"]["attention_out"], residual["worked"]["sum"])):
+        close(total, left + right, 0.01, f"residual: the addition is wrong at dimension {index}")
+    if residual["layers"][-1]["out_norm"] <= residual["layers"][0]["in_norm"]:
+        problems.append("residual: the stream did not grow, so the LayerNorm argument breaks")
+
+    prediction = built["prediction"]
+    top = prediction["top"][0]
+    close(top["exp_shifted"] / prediction["partition"], top["probability"], 0.001,
+          "output: exp(l - max) / Z does not reproduce the probability")
+    unembedding = prediction["unembedding"]
+    close(unembedding["final_norm"] * unembedding["embedding_norm"] * unembedding["cosine"],
+          unembedding["logit"], 0.6,
+          "output: |z| |e| cos(theta) does not reproduce the logit")
+
+    for layer in built["mlp"]["layers"]:
+        for neuron in layer["top_neurons"]:
+            h = neuron["pre_activation"]
+            close(neuron["activation"],
+                  0.5 * h * (1 + np.tanh(np.sqrt(2 / np.pi) * (h + 0.044715 * h ** 3))),
+                  0.01, f"feed-forward: GELU mismatch at neuron {neuron['neuron']}")
+
+    for neighbours in built["embeddings"]["neighbors"]:
+        for neighbour in neighbours:
+            close(neighbour["dot"] / (neighbour["norm"] * neighbour["query_norm"]),
+                  neighbour["similarity"], 0.01,
+                  f"embeddings: the cosine for {neighbour['token']!r} does not divide out")
+
+    worked = built["worked_example"]
+    if worked:
+        visible = [key for key in worked["keys"] if not key["masked"]]
+        winner = max(visible, key=lambda key: key["probability"])
+        close(sum(winner["products"]), winner["partial_sum"], 0.02,
+              "attention: the shown products do not sum to the partial")
+        close(winner["dot_product"] / worked["scale_divisor"], winner["scaled"], 0.01,
+              "attention: the scaling step is wrong")
+        close(winner["exponential"] / worked["exponential_sum"], winner["probability"], 0.001,
+              "attention: softmax does not reproduce the weight")
+
+    return problems
+
+
 def main():
     parser = argparse.ArgumentParser(description="Precompute the Inside an LLM artifacts")
     parser.add_argument("--weights", required=True, help="Directory with model.safetensors, vocab.json, merges.txt")
@@ -324,6 +583,11 @@ def main():
     index = []
     for example in EXAMPLES:
         built = build_example(model, tokenizer, example)
+        problems = verify(built)
+        if problems:
+            raise SystemExit(
+                f"{example['id']}: the payload contradicts the arithmetic the page shows\n  "
+                + "\n  ".join(problems))
         path = out_dir / f"{example['id']}.json"
         path.write_text(json.dumps(built, separators=(",", ":")), encoding="utf-8")
         size_kb = path.stat().st_size / 1024

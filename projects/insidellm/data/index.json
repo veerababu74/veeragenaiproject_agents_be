@@ -9,7 +9,9 @@
    "top_prediction": {
     "token": ",",
     "id": 11,
-    "probability": 0.23701
+    "probability": 0.23701,
+    "logit": -84.461,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -21,7 +23,9 @@
    "top_prediction": {
     "token": " 5",
     "id": 642,
-    "probability": 0.87054
+    "probability": 0.87054,
+    "logit": -40.646,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -33,7 +37,9 @@
    "top_prediction": {
     "token": " the",
     "id": 262,
-    "probability": 0.08459
+    "probability": 0.08459,
+    "logit": -100.25,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -45,7 +51,9 @@
    "top_prediction": {
     "token": ".",
     "id": 13,
-    "probability": 0.1951
+    "probability": 0.1951,
+    "logit": -85.328,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -57,7 +65,9 @@
    "top_prediction": {
     "token": " had",
     "id": 550,
-    "probability": 0.21806
+    "probability": 0.21806,
+    "logit": -121.481,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -69,7 +79,9 @@
    "top_prediction": {
     "token": ":",
     "id": 25,
-    "probability": 0.17113
+    "probability": 0.17113,
+    "logit": -98.865,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -81,7 +93,9 @@
    "top_prediction": {
     "token": " a",
     "id": 257,
-    "probability": 0.24272
+    "probability": 0.24272,
+    "logit": -74.074,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -93,7 +107,9 @@
    "top_prediction": {
     "token": " cat",
     "id": 3797,
-    "probability": 0.90213
+    "probability": 0.90213,
+    "logit": -54.704,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -105,7 +121,9 @@
    "top_prediction": {
     "token": " is",
     "id": 318,
-    "probability": 0.20371
+    "probability": 0.20371,
+    "logit": -102.713,
+    "exp_shifted": 1.0
    }
   },
   {
@@ -117,7 +135,9 @@
    "top_prediction": {
     "token": " Rome",
     "id": 10598,
-    "probability": 0.10649
+    "probability": 0.10649,
+    "logit": -97.143,
+    "exp_shifted": 1.0
    }
   }
  ]
