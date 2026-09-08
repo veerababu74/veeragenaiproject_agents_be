@@ -359,6 +359,142 @@ def build_prediction(model: GPT2, tokenizer: GPT2Tokenizer, trace) -> dict:
     }
 
 
+# How many dimensions of each vector the run view shows. Fewer than the
+# component panels use: the run view puts two vectors side by side on one row
+# and repeats that for ~80 rows, so the strip has to stay narrow enough to read.
+TRACE_DIMS = 12
+
+
+def build_trace(model: GPT2, tokenizer: GPT2Tokenizer, trace, tokens, ids) -> dict:
+    """One token's journey through all twelve layers, stage by stage.
+
+    The component panels answer "what does attention do?" and each one shows a
+    different slice of a different thing. None of them answers "what happened to
+    *this* vector, and then what happened next?" -- and that question is the one
+    a reader actually starts with.
+
+    So this records the same position at every stage boundary: what entered, what
+    each sub-block wrote, and what the running sum became. The output of every
+    stage here is literally the input of the next, which is what makes the chain
+    followable rather than a set of unrelated readings.
+
+    Only the final position is traced. It is the one the prediction is made from,
+    and tracing all of them would multiply the payload by the token count for no
+    extra insight.
+    """
+    position = len(tokens) - 1
+
+    def strip(vector):
+        return r(vector[:TRACE_DIMS], 3)
+
+    def norm(vector):
+        return r(float(np.linalg.norm(vector)), 2)
+
+    def decode(hidden):
+        """What the model would predict if it stopped here. Cheap, and it turns
+        the residual stream from an opaque vector into something with a meaning
+        the reader can watch change."""
+        logits = model.logit_lens(hidden)
+        probabilities = softmax(logits[-1])
+        best = int(np.argmax(probabilities))
+        return {"token": tokenizer.token_text(best), "probability": r(probabilities[best], 4)}
+
+    layers = []
+    for entry in trace["layers"]:
+        index = entry["index"]
+        incoming = trace["residual_stream"][index]
+        attention = entry["attention"]
+
+        # Which head moved the most information into this position, and from
+        # where. Position 0 is excluded because it acts as a sink in most heads
+        # and would win almost every layer without meaning anything.
+        probabilities = attention["probs"][:, position, :]
+        candidates = probabilities.copy()
+        if candidates.shape[1] > 1:
+            candidates[:, 0] = 0
+        head = int(np.argmax(candidates.max(axis=1)))
+        source = int(np.argmax(candidates[head]))
+
+        activated = entry["mlp"]["activated"][position]
+        pre_activation = entry["mlp"]["pre_activation"][position]
+        neuron = int(np.argmax(np.abs(activated)))
+
+        layers.append({
+            "layer": index,
+            "in": strip(incoming[position]),
+            "in_norm": norm(incoming[position]),
+            "ln1": {
+                "mean": r(float(entry["ln_1"]["mean"][position]), 3),
+                "std": r(float(entry["ln_1"]["std"][position]), 3),
+                "output": strip(entry["ln_1"]["output"][position]),
+                "output_norm": norm(entry["ln_1"]["output"][position]),
+            },
+            "attention": {
+                "output": strip(attention["output"][position]),
+                "output_norm": norm(attention["output"][position]),
+                "head": head,
+                "source_position": source,
+                "source_token": tokens[source],
+                "weight": r(float(probabilities[head, source]), 4),
+                # How sharply that head was focused, in this layer, here.
+                "entropy": r(float(-(probabilities[head] *
+                                     np.log(probabilities[head] + 1e-10)).sum()), 3),
+            },
+            "after_attention": strip(entry["after_attention_residual"][position]),
+            "after_attention_norm": norm(entry["after_attention_residual"][position]),
+            "ln2": {
+                "mean": r(float(entry["ln_2"]["mean"][position]), 3),
+                "std": r(float(entry["ln_2"]["std"][position]), 3),
+                "output": strip(entry["ln_2"]["output"][position]),
+                "output_norm": norm(entry["ln_2"]["output"][position]),
+            },
+            "mlp": {
+                "output": strip(entry["mlp"]["output"][position]),
+                "output_norm": norm(entry["mlp"]["output"][position]),
+                "neuron": neuron,
+                "pre_activation": r(float(pre_activation[neuron]), 3),
+                "activation": r(float(activated[neuron]), 3),
+                "expanded_dim": int(entry["mlp"]["expanded_dim"]),
+                "fraction_active": r(float((activated > 0).mean()), 3),
+            },
+            "out": strip(entry["after_mlp_residual"][position]),
+            "out_norm": norm(entry["after_mlp_residual"][position]),
+            # The running guess, after this layer has had its say.
+            "prediction": decode(trace["residual_stream"][index + 1]),
+        })
+
+    final = trace["final_norm"][position]
+    logits = trace["logits"][position]
+    return {
+        "position": position,
+        "token": tokens[position],
+        "token_id": int(ids[position]),
+        "dims_shown": TRACE_DIMS,
+        "d_model": int(final.shape[0]),
+        "embedding": {
+            "token": strip(trace["token_embeddings"][position]),
+            "token_norm": norm(trace["token_embeddings"][position]),
+            "position": strip(trace["position_embeddings"][position]),
+            "position_norm": norm(trace["position_embeddings"][position]),
+            "sum": strip(trace["embedding_sum"][position]),
+            "sum_norm": norm(trace["embedding_sum"][position]),
+            "prediction": decode(trace["residual_stream"][0]),
+        },
+        "layers": layers,
+        "final_norm": {
+            "output": strip(final),
+            "output_norm": norm(final),
+            "mean": r(float(trace["residual_stream"][-1][position].mean()), 3),
+            "std": r(float(trace["residual_stream"][-1][position].std()), 3),
+        },
+        "output": {
+            "max_logit": r(float(logits.max()), 3),
+            "partition": r(float(np.exp(logits - logits.max()).sum()), 4),
+            "top": top_predictions(logits, tokenizer, 5),
+        },
+    }
+
+
 def build_example(model: GPT2, tokenizer: GPT2Tokenizer, example: dict) -> dict:
     encoded = tokenizer.encode(example["text"])
     ids = encoded["ids"]
@@ -450,6 +586,7 @@ def build_example(model: GPT2, tokenizer: GPT2Tokenizer, example: dict) -> dict:
         "attention": {"layers": attention_layers, "patterns": patterns, "entropy": entropies},
         "worked_example": build_worked_example(trace, tokenizer, tokens, model),
         "residual": build_residual(trace, tokens),
+        "trace": build_trace(model, tokenizer, trace, tokens, ids),
         "mlp": {"layers": mlp_layers},
         "logit_lens": lens,
         "prediction": prediction,
@@ -552,6 +689,33 @@ def verify(built: dict) -> list[str]:
             close(neighbour["dot"] / (neighbour["norm"] * neighbour["query_norm"]),
                   neighbour["similarity"], 0.01,
                   f"embeddings: the cosine for {neighbour['token']!r} does not divide out")
+
+    # The run view's two loudest claims: that the stages form an unbroken chain,
+    # and that the residual steps are additions the reader could do by hand.
+    # Both are stated on screen, so neither is safe to leave unchecked.
+    trace_data = built["trace"]
+    previous = trace_data["embedding"]["sum"]
+    for index_of, (token_part, position_part, total) in enumerate(zip(
+            trace_data["embedding"]["token"], trace_data["embedding"]["position"], previous)):
+        close(total, token_part + position_part, 0.01,
+              f"trace: x0 is not token + position at dimension {index_of}")
+    for entry in trace_data["layers"]:
+        layer_index = entry["layer"]
+        for index_of, (arriving, leaving) in enumerate(zip(entry["in"], previous)):
+            close(arriving, leaving, 0.006,
+                  f"trace: layer {layer_index} does not receive what layer "
+                  f"{layer_index - 1} produced, at dimension {index_of}")
+        for index_of, (stream, written, total) in enumerate(zip(
+                entry["in"], entry["attention"]["output"], entry["after_attention"])):
+            close(total, stream + written, 0.01,
+                  f"trace: layer {layer_index} attention residual at dimension {index_of}")
+        for index_of, (stream, written, total) in enumerate(zip(
+                entry["after_attention"], entry["mlp"]["output"], entry["out"])):
+            close(total, stream + written, 0.01,
+                  f"trace: layer {layer_index} feed-forward residual at dimension {index_of}")
+        previous = entry["out"]
+    if trace_data["output"]["top"][0]["token"] != built["prediction"]["top"][0]["token"]:
+        problems.append("trace: the run ends on a different token than the walkthrough reports")
 
     worked = built["worked_example"]
     if worked:

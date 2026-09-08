@@ -15,6 +15,7 @@ simulated, and nothing is illustrative.
 - [The build step](#the-build-step)
 - [What is captured](#what-is-captured)
 - [The nine components](#the-nine-components)
+- [Two ways in](#two-ways-in)
 - [The ten examples](#the-ten-examples)
 - [Correctness](#correctness)
 - [API reference](#api-reference)
@@ -114,6 +115,7 @@ Per example, from one instrumented forward pass:
 | MLP | Top activated neurons of 3072, **both sides of GELU**, and what fraction are active |
 | Residual stream | Per layer: ‖x‖ in and out, ‖Attn‖, ‖FFN‖, and the cosine between the stream entering and leaving |
 | Logit lens | The decoded prediction after **every** layer |
+| Run trace | The final position's vector at **every stage boundary** of all twelve layers — in, both normalisations, what each sub-block wrote, both residual sums, and the running prediction |
 | Output | Top-8 tokens with probabilities **and logits**, the partition function Z, the ‖z‖‖e‖cos θ decomposition of the winning logit, and the distribution's entropy |
 
 Several of those exist only so the page can **show its working**. A probability on
@@ -123,7 +125,7 @@ follows is that every quantity an equation on the page divides by, or sums over,
 is shipped alongside the result — the cosine's two norms, the softmax's Z, the
 GELU's input, the LayerNorm's μ and σ.
 
-Payloads are 42–78 KB per example. Attention dominates: 12 × 12 × T² floats, which is why the
+Payloads are 65–102 KB per example. Attention dominates: 12 × 12 × T² floats, which is why the
 examples are kept to 5–8 tokens.
 
 ---
@@ -152,6 +154,36 @@ substituted in and the result of each step shown. A formula printed on its own
 asks the reader to take it on trust, and the numbers were already in the payload.
 
 ---
+
+## Two ways in
+
+The project answers two different questions and needs two shapes to do it.
+
+**Components** is a reference. Nine entries, opened one at a time, each explaining
+one mechanism and showing what it did to this sentence. It answers "what does
+attention do?"
+
+**Run it** is a sequence. The same forward pass laid out as **76 steps** — two to
+get from a token ID into the stack, six per layer for twelve layers, two to get
+back out to a distribution. It answers the question a reader actually arrives
+with: *what happened to this vector, and then what happened next?*
+
+The component view could never answer that, because each of its panels shows a
+different slice of a different thing and none of them connect. The run view's
+defining property is that **the output vector of every step is the input vector
+of the next one**, unbroken from `W_E[t]` to a probability over 50,257 tokens.
+That is what makes it a chain rather than a gallery, and it is asserted at build
+time rather than hoped for.
+
+Each step shows the vector going in, what the operation wrote, the vector coming
+out, the operation's own numbers (μ and σ, the attending head and where it read
+from, the loudest neuron and its GELU), and — at every layer boundary — the
+model's running best guess, so the prediction can be watched forming. Play walks
+it; the arrows step it; the rail jumps to any point.
+
+The six steps in every layer are: normalise, attention, add to the stream,
+normalise again, feed-forward, add to the stream again. Seeing that same shape
+twelve times is most of the point.
 
 ## The ten examples
 
@@ -205,6 +237,12 @@ The residual check is the one with teeth: it asserts the stream actually **grows
 across the twelve layers, because that growth is the entire argument for why
 normalisation has to run before every block. If it ever stopped being true, the
 explanation would be wrong and the build would say so.
+
+The run view's chain is checked the same way, and on every example: that each
+layer's input is the previous layer's output, and that both residual steps are
+element-wise additions the reader could do by hand — `x + Attn = x′` and
+`x′ + FFN = x`. Those are the two claims the view makes loudest, so they are the
+two least safe to leave unverified.
 
 ---
 
