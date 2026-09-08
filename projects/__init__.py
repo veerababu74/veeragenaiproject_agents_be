@@ -8,9 +8,11 @@ project's `cleanup` on the retention schedule.
 
 from core.registry import Project
 from projects.insidellm import PROJECT as INSIDELLM
+from projects.marketingcopilot import PROJECT as MARKETINGCOPILOT
 from projects.simpleagent import PROJECT as SIMPLEAGENT
 
 REGISTRY: tuple[Project, ...] = (
     SIMPLEAGENT,
     INSIDELLM,
+    MARKETINGCOPILOT,
 )
