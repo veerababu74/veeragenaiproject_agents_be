@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import current_user_id
-from projects.marketingcopilot import content, evaluation, providers, retrieval
+from projects.marketingcopilot import content, evaluation, examples as example_catalog, providers, retrieval
 from projects.marketingcopilot.corpus import GOLDEN_SET
 from projects.marketingcopilot.database import (
     DEMO_WORKSPACE, execute, get_settings_row, new_id, query,
@@ -167,25 +167,33 @@ async def document(document_id: str, _: str = Depends(current_user_id)):
 
 # ── chat ─────────────────────────────────────────────────────────────────────
 
+@router.get("/examples")
+async def examples(_: str = Depends(current_user_id)):
+    """Ready-made scenarios, one per route.
+
+    Offered instead of a blank chat box because the interesting thing about this
+    system is that different questions take different paths, and that is
+    invisible until you have run one of each. Each scenario says what it
+    demonstrates and what to watch for while it runs.
+    """
+    return {"examples": sorted(example_catalog.EXAMPLES, key=lambda item: item["order"])}
+
+
+@router.get("/examples/{example_id}")
+async def example_detail(example_id: str, _: str = Depends(current_user_id)):
+    found = example_catalog.example_by_id(example_id)
+    if not found:
+        raise HTTPException(404, "Unknown example")
+    return found
+
+
 @router.get("/suggestions")
 async def suggestions(_: str = Depends(current_user_id)):
-    """Questions that each exercise a different path, labelled with which one.
-
-    Offered because the interesting thing about this system is that different
-    questions take different routes, and that is invisible until you ask one of
-    each.
-    """
+    """The short form the composer uses. Kept as a thin view over the scenarios
+    so the two can never disagree about what the copilot is good at."""
     return {"suggestions": [
-        {"text": "What tone should we use in fintech campaigns?", "route": "rag",
-         "note": "one retrieval, one generation — no agent loop"},
-        {"text": "Which channel had the lowest cost per acquisition in Q3 2024?", "route": "sql",
-         "note": "numbers come from the database, never from a document"},
-        {"text": "Why did the Q3 LinkedIn fintech campaign underperform?", "route": "hybrid",
-         "note": "the question the architecture exists for — numbers and context"},
-        {"text": "Draft a LinkedIn ad for the fintech segment.", "route": "generate",
-         "note": "brand voice retrieved, then the draft is compliance-checked"},
-        {"text": "What is our TikTok strategy for Japan?", "route": "rag",
-         "note": "not in the corpus — it should refuse rather than invent"},
+        {"text": item["question"], "route": item["route"], "note": item["tagline"]}
+        for item in sorted(example_catalog.EXAMPLES, key=lambda entry: entry["order"])
     ]}
 
 
