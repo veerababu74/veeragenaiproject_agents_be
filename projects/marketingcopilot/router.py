@@ -33,8 +33,12 @@ router = APIRouter(tags=["marketingcopilot"])
 class SetupRequest(BaseModel):
     provider: str = Field(min_length=1, max_length=30)
     chat_model: str = Field(min_length=1, max_length=80)
+    api_key: str = Field(default="", max_length=400)
+    embed_provider: str = Field(default="openai", max_length=30)
     embed_model: str = Field(min_length=1, max_length=80)
-    api_key: str = Field(min_length=8, max_length=400)
+    # Both keys are optional on the request so a user can update one without
+    # re-pasting the other; the stored value is kept when a field is blank.
+    embed_api_key: str = Field(default="", max_length=400)
 
 
 class ChatRequest(BaseModel):
@@ -57,12 +61,24 @@ class EvalRequest(BaseModel):
 
 
 def _config(user_id: str) -> dict:
+    """The user's two configurations, checked separately.
+
+    Reported separately too: "add your key" is unhelpful when one of the two is
+    present and the other is not, and that is the most common state to be in
+    while setting this up.
+    """
     row = get_settings_row(user_id)
-    if not row or not row["api_key"]:
-        raise HTTPException(400, "Add your API key in Setup before running the copilot.")
+    if not row:
+        raise HTTPException(400, "Add your API keys in Setup before running the copilot.")
+    if not row["api_key"]:
+        raise HTTPException(400, "No chat API key saved. Add one in Setup.")
+    if not row["embed_api_key"]:
+        raise HTTPException(400, "No embedding API key saved. Add one in Setup.")
     return {
         "provider": row["provider"], "chat_model": row["chat_model"],
-        "embed_model": row["embed_model"], "api_key": row["api_key"],
+        "api_key": row["api_key"],
+        "embed_provider": row["embed_provider"], "embed_model": row["embed_model"],
+        "embed_api_key": row["embed_api_key"],
     }
 
 
@@ -99,24 +115,42 @@ async def explain(_: str = Depends(current_user_id)):
 @router.get("/setup")
 async def read_setup(user_id: str = Depends(current_user_id)):
     row = get_settings_row(user_id)
+    hint = lambda value: f"…{value[-4:]}" if value else ""  # noqa: E731
     return {
         "providers": providers.catalog(),
-        "configured": bool(row and row["api_key"]),
+        # Configured means both halves: an indexed corpus needs the embedding
+        # key and an answer needs the chat key, and having one is not enough.
+        "configured": bool(row and row["api_key"] and row["embed_api_key"]),
+        "chat_configured": bool(row and row["api_key"]),
+        "embed_configured": bool(row and row["embed_api_key"]),
         "provider": row["provider"] if row else "openai",
         "chat_model": row["chat_model"] if row else "gpt-4o-mini",
+        "embed_provider": row["embed_provider"] if row else "openai",
         "embed_model": row["embed_model"] if row else "text-embedding-3-small",
-        # Never return the key. A masked hint is enough to confirm which one is saved.
-        "key_hint": f"…{row['api_key'][-4:]}" if row and row["api_key"] else "",
+        # Never return a key. A masked hint confirms which one is saved.
+        "key_hint": hint(row["api_key"]) if row else "",
+        "embed_key_hint": hint(row["embed_api_key"]) if row else "",
     }
 
 
 @router.post("/setup")
 async def write_setup(request: SetupRequest, user_id: str = Depends(current_user_id)):
-    if not providers.known(request.provider):
-        raise HTTPException(400, f"Unknown provider: {request.provider}")
-    save_settings_row(user_id, request.provider, request.chat_model,
-                      request.embed_model, request.api_key)
-    return {"saved": True}
+    if not providers.known_chat(request.provider):
+        raise HTTPException(400, f"Unknown chat provider: {request.provider}")
+    if not providers.known_embedding(request.embed_provider):
+        raise HTTPException(400, f"Unknown embedding provider: {request.embed_provider}")
+
+    # A blank key means "leave the saved one alone", so updating the chat model
+    # does not require re-pasting an embedding key that has not changed.
+    existing = get_settings_row(user_id)
+    api_key = request.api_key.strip() or (existing["api_key"] if existing else "")
+    embed_key = request.embed_api_key.strip() or (existing["embed_api_key"] if existing else "")
+    if not api_key and not embed_key:
+        raise HTTPException(400, "Add at least one API key.")
+
+    save_settings_row(user_id, request.provider, request.chat_model, api_key,
+                      request.embed_provider, request.embed_model, embed_key)
+    return {"saved": True, "chat_configured": bool(api_key), "embed_configured": bool(embed_key)}
 
 
 @router.post("/index")
@@ -130,7 +164,7 @@ async def build_index(user_id: str = Depends(current_user_id)):
     config = _config(user_id)
     try:
         result = retrieval.index_workspace(
-            config["provider"], config["embed_model"], config["api_key"])
+            config["embed_provider"], config["embed_model"], config["embed_api_key"])
     except Exception as error:  # noqa: BLE001 — surface the provider's own message
         raise HTTPException(400, f"Indexing failed: {error}") from error
     return result

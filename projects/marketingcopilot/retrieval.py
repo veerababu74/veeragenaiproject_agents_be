@@ -27,6 +27,7 @@ import math
 import re
 
 from core.config import project_value, settings
+from projects.marketingcopilot.providers import build_embeddings
 from projects.marketingcopilot.database import (
     DEMO_WORKSPACE, database, new_id, query,
 )
@@ -91,24 +92,15 @@ def chunk_document(body: str) -> list[dict]:
 # ── embedding ────────────────────────────────────────────────────────────────
 
 def embed_texts(texts: list[str], provider: str, model: str, api_key: str) -> list[list[float]]:
-    """Embed with the user's own key. Raises so the caller can report it."""
-    if provider == "google":
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        client = GoogleGenerativeAIEmbeddings(model=model, google_api_key=api_key)
-    else:
-        from langchain_openai import OpenAIEmbeddings
-        client = OpenAIEmbeddings(model=model, api_key=api_key)
-    return client.embed_documents(texts)
+    """Embed with the user's own embedding key. Raises so the caller can report it."""
+    return build_embeddings(provider, model, api_key).embed_documents(texts)
 
 
 def embed_query(text: str, provider: str, model: str, api_key: str) -> list[float]:
-    if provider == "google":
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        client = GoogleGenerativeAIEmbeddings(model=model, google_api_key=api_key)
-    else:
-        from langchain_openai import OpenAIEmbeddings
-        client = OpenAIEmbeddings(model=model, api_key=api_key)
-    return client.embed_query(text)
+    """The query side of retrieval, which must use the same model the corpus was
+    indexed with — a different one puts the query in an unrelated vector space
+    and search returns nonsense without raising anything."""
+    return build_embeddings(provider, model, api_key).embed_query(text)
 
 
 # ── the vector store, with a local fallback ──────────────────────────────────

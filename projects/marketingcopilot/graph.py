@@ -150,9 +150,11 @@ def rewrite_question(state: AgentState) -> dict:
 
 def retrieve(state: AgentState) -> dict:
     config = state["config"]
+    # The embedding half, not the chat half: retrieval must use the same model
+    # the corpus was indexed with, whatever the chat model happens to be.
     hits = retrieval.search(
-        state["question"], config["provider"], config["embed_model"], config["api_key"],
-        top_k=5, filters=state.get("filters") or {})
+        state["question"], config["embed_provider"], config["embed_model"],
+        config["embed_api_key"], top_k=5, filters=state.get("filters") or {})
     detail = (f"{len(hits)} chunks from {len({h.get('title') for h in hits})} documents"
               if hits else "nothing matched")
     return {

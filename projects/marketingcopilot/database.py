@@ -88,13 +88,17 @@ CREATE TABLE IF NOT EXISTS compliance_rules (
 -- ── the user's own setup ────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS settings_rows (
-    user_id      TEXT PRIMARY KEY,
-    provider     TEXT NOT NULL DEFAULT 'openai',
-    chat_model   TEXT NOT NULL DEFAULT 'gpt-4o-mini',
-    embed_model  TEXT NOT NULL DEFAULT 'text-embedding-3-small',
-    api_key      TEXT NOT NULL DEFAULT '',
-    created_at   TEXT DEFAULT (datetime('now')),
-    updated_at   TEXT DEFAULT (datetime('now'))
+    user_id        TEXT PRIMARY KEY,
+    -- Chat and embeddings are configured independently: they are different
+    -- jobs, and the fastest chat provider may serve no embeddings at all.
+    provider       TEXT NOT NULL DEFAULT 'openai',
+    chat_model     TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+    api_key        TEXT NOT NULL DEFAULT '',
+    embed_provider TEXT NOT NULL DEFAULT 'openai',
+    embed_model    TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+    embed_api_key  TEXT NOT NULL DEFAULT '',
+    created_at     TEXT DEFAULT (datetime('now')),
+    updated_at     TEXT DEFAULT (datetime('now'))
 );
 
 -- ── conversation and observability ──────────────────────────────────────────
@@ -154,8 +158,31 @@ database = Database("marketingcopilot", SCHEMA)
 DEMO_WORKSPACE = "demo"
 
 
+def _migrate_settings(conn) -> None:
+    """Add the embedding columns to a table created before they existed.
+
+    CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a schema edit
+    alone would never reach anyone who had already used the project. Their old
+    single key becomes the embedding key too, which is exactly what it was doing
+    before the split.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(settings_rows)")}
+    if "embed_api_key" in columns:
+        return
+    if "embed_provider" not in columns:
+        conn.execute("ALTER TABLE settings_rows ADD COLUMN embed_provider TEXT NOT NULL DEFAULT 'openai'")
+    conn.execute("ALTER TABLE settings_rows ADD COLUMN embed_api_key TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE settings_rows SET embed_provider = provider, embed_api_key = api_key")
+    conn.commit()
+
+
 def init_db() -> None:
     database.initialize()
+    connection = database.connect()
+    try:
+        _migrate_settings(connection)
+    finally:
+        connection.close()
     from projects.marketingcopilot.corpus import seed_workspace
 
     seed_workspace()
@@ -206,16 +233,18 @@ def get_settings_row(user_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def save_settings_row(user_id: str, provider: str, chat_model: str,
-                      embed_model: str, api_key: str) -> None:
+def save_settings_row(user_id: str, provider: str, chat_model: str, api_key: str,
+                      embed_provider: str, embed_model: str, embed_api_key: str) -> None:
     execute(
-        """INSERT INTO settings_rows (user_id, provider, chat_model, embed_model, api_key)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO settings_rows
+             (user_id, provider, chat_model, api_key, embed_provider, embed_model, embed_api_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(user_id) DO UPDATE SET
              provider = excluded.provider, chat_model = excluded.chat_model,
-             embed_model = excluded.embed_model, api_key = excluded.api_key,
+             api_key = excluded.api_key, embed_provider = excluded.embed_provider,
+             embed_model = excluded.embed_model, embed_api_key = excluded.embed_api_key,
              updated_at = datetime('now')""",
-        (user_id, provider, chat_model, embed_model, api_key),
+        (user_id, provider, chat_model, api_key, embed_provider, embed_model, embed_api_key),
     )
 
 
